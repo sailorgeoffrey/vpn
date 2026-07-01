@@ -1,0 +1,33 @@
+{
+  "name": "vpn",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "directories": {
+    "lib": "lib"
+  },
+  "scripts": {
+    "build": "tsc",
+    "cdk": "cdk",
+    "diff:eu": "cdk diff VpnEu",
+    "diff:us": "cdk diff VpnUs",
+    "deploy:eu": "cdk deploy VpnEu",
+    "deploy:us": "cdk deploy VpnUs",
+    "deploy:all": "cdk deploy --all"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@types/node": "^26.1.0",
+    "aws-cdk": "^2.1128.1",
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.6.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "source-map-support": "^0.5.21"
+  }
+}

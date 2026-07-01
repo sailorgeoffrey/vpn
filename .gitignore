@@ -1,0 +1,22 @@
+# CDK
+cdk.out/
+cdk.context.json
+
+# Node
+node_modules/
+dist/
+*.js
+*.d.ts
+*.d.ts.map
+
+# Keep bin/ and lib/ TypeScript source but ignore compiled output
+!bin/*.ts
+!lib/*.ts
+
+# IDEs
+.idea/
+.vscode/
+
+# Misc
+.DS_Store
+*.log

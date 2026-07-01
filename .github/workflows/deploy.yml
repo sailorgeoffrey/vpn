@@ -1,0 +1,50 @@
+name: Deploy VPN
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      stack:
+        description: 'Which stack(s) to deploy'
+        required: false
+        default: 'all'
+        type: choice
+        options: [all, VpnEu, VpnUs]
+
+permissions:
+  id-token: write   # required for OIDC → aws-actions/configure-aws-credentials
+  contents: read
+
+jobs:
+  deploy:
+    name: CDK Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions
+          aws-region: eu-central-1   # anchor region for the OIDC call; each stack uses its own region
+
+      - name: CDK Deploy
+        run: |
+          STACK="${{ github.event.inputs.stack || 'all' }}"
+          if [ "$STACK" = "all" ]; then
+            npx cdk deploy --all --require-approval never
+          else
+            npx cdk deploy "$STACK" --require-approval never
+          fi
+        env:
+          CDK_DEFAULT_ACCOUNT: ${{ vars.AWS_ACCOUNT_ID }}
