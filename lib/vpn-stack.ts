@@ -3,9 +3,9 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
-import * as cr from 'aws-cdk-lib/custom-resources';
-import {Construct} from 'constructs';
+import * as fs from 'fs';
 import * as path from 'path';
+import {Construct} from 'constructs';
 
 export interface VpnStackProps extends cdk.StackProps {
     /**
@@ -61,7 +61,6 @@ export class VpnStack extends cdk.Stack {
                 iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore'),
             ],
         });
-        // Allow the instance to write its server keypair to SSM
         instanceRole.addToPolicy(new iam.PolicyStatement({
             actions: ['ssm:PutParameter', 'ssm:GetParameter'],
             resources: [
@@ -80,13 +79,11 @@ export class VpnStack extends cdk.Stack {
             'apt-get update -y',
             'apt-get install -y wireguard awscli jq',
 
-            // Generate server keypair only if not already stored
             `REGION="${this.region}"`,
             `ALIAS="${props.regionAlias}"`,
             'PRIV_PARAM="/wireguard/$ALIAS/server/private-key"',
             'PUB_PARAM="/wireguard/$ALIAS/server/public-key"',
 
-            // Check if server private key already exists in SSM
             `if ! aws ssm get-parameter --name "$PRIV_PARAM" --region "$REGION" --with-decryption > /dev/null 2>&1; then`,
             '  SERVER_PRIVATE=$(wg genkey)',
             '  SERVER_PUBLIC=$(echo "$SERVER_PRIVATE" | wg pubkey)',
@@ -94,19 +91,16 @@ export class VpnStack extends cdk.Stack {
             '  aws ssm put-parameter --name "$PUB_PARAM"  --value "$SERVER_PUBLIC"  --type "SecureString" --key-id "alias/wireguard-vpn-$ALIAS" --region "$REGION" --overwrite',
             'fi',
 
-            // Wait for the client public key to appear in SSM (placed there by the Lambda custom resource)
             `until aws ssm get-parameter --name "/wireguard/$ALIAS/client/public-key" --region "$REGION" --with-decryption > /dev/null 2>&1; do sleep 5; done`,
             `CLIENT_PUBLIC=$(aws ssm get-parameter --name "/wireguard/$ALIAS/client/public-key" --region "$REGION" --with-decryption --query Parameter.Value --output text)`,
             `SERVER_PRIVATE=$(aws ssm get-parameter --name "$PRIV_PARAM" --region "$REGION" --with-decryption --query Parameter.Value --output text)`,
 
-            // Write wg0.conf
             'cat > /etc/wireguard/wg0.conf << EOF',
             '[Interface]',
             'Address = 10.0.0.1/24',
             'ListenPort = 51820',
             'PrivateKey = $SERVER_PRIVATE',
             '',
-            '# Enable IP forwarding and NAT so VPN clients can reach the internet',
             'PostUp   = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -A FORWARD -o wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o $(ip route | grep default | awk \'{print $5}\') -j MASQUERADE; sysctl -w net.ipv4.ip_forward=1',
             'PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o $(ip route | grep default | awk \'{print $5}\') -j MASQUERADE',
             '',
@@ -120,7 +114,6 @@ export class VpnStack extends cdk.Stack {
         );
 
         // ── Launch Template ───────────────────────────────────────────────────────
-        // Use ARM (Graviton) t4g.nano – cheapest instance with good network throughput
         const launchTemplate = new ec2.LaunchTemplate(this, 'WireguardTemplate', {
             launchTemplateName: `wireguard-vpn-${props.regionAlias}`,
             instanceType: ec2.InstanceType.of(ec2.InstanceClass.T4G, ec2.InstanceSize.NANO),
@@ -131,7 +124,6 @@ export class VpnStack extends cdk.Stack {
             role: instanceRole,
             userData,
             requireImdsv2: true,
-            // No EBS encryption needed – keypairs live in SSM, not on disk long-term
             blockDevices: [{
                 deviceName: '/dev/sda1',
                 volume: ec2.BlockDeviceVolume.ebs(8, {deleteOnTermination: true}),
@@ -139,10 +131,16 @@ export class VpnStack extends cdk.Stack {
         });
 
         // ── Lambda: generate client keypair (runs once at deploy time) ───────────
+        // Uses fromInline to avoid needing a bootstrapped CDK S3 asset bucket.
+        const lambdaCode = fs.readFileSync(
+            path.join(__dirname, '../lambda/generate_keypair.py'),
+            'utf8',
+        );
+
         const keypairLambda = new lambda.Function(this, 'ClientKeypairFn', {
             runtime: lambda.Runtime.PYTHON_3_12,
-            handler: 'generate_keypair.handler',
-            code: lambda.Code.fromAsset(path.join(__dirname, '../lambda')),
+            handler: 'index.handler',
+            code: lambda.Code.fromInline(lambdaCode),
             timeout: cdk.Duration.minutes(2),
             environment: {
                 REGION: this.region,
@@ -162,45 +160,38 @@ export class VpnStack extends cdk.Stack {
             resources: [key.keyArn],
         }));
 
-        // Grant the deploying principal (human or CI) read access to client private key
         key.addToResourcePolicy(new iam.PolicyStatement({
             principals: [new iam.AccountRootPrincipal()],
             actions: ['kms:Decrypt', 'kms:DescribeKey'],
             resources: ['*'],
         }));
 
-        // ── Custom Resource: trigger the Lambda at deploy time ───────────────────
-        const provider = new cr.Provider(this, 'KeypairProvider', {
-            onEventHandler: keypairLambda,
-        });
+        // ── Custom Resource: raw CfnCustomResource pointing directly at the Lambda.
+        // Avoids cr.Provider which bundles its own framework Lambda as an S3 asset.
+        new cdk.CfnCustomResource(this, 'ClientKeypair', {
+            serviceToken: keypairLambda.functionArn,
+        }).addPropertyOverride('Version', '1');
 
-        new cdk.CustomResource(this, 'ClientKeypair', {
-            serviceToken: provider.serviceToken,
-            properties: {
-                // Bump this to force key rotation
-                Version: '1',
-            },
+        // Allow CloudFormation to invoke the Lambda
+        keypairLambda.addPermission('AllowCfnInvoke', {
+            principal: new iam.ServicePrincipal('cloudformation.amazonaws.com'),
         });
 
         // ── Outputs ───────────────────────────────────────────────────────────────
         this.launchTemplateId = new cdk.CfnOutput(this, 'LaunchTemplateId', {
             value: launchTemplate.launchTemplateId!,
-            description: 'Pass to connect script: aws ec2 run-instances --launch-template LaunchTemplateId=...',
         });
 
         this.clientPrivateKeyParam = new cdk.CfnOutput(this, 'ClientPrivateKeyParam', {
             value: `/wireguard/${props.regionAlias}/client/private-key`,
-            description: 'SSM path for client WireGuard private key (KMS-encrypted)',
         });
 
         this.serverPublicKeyParam = new cdk.CfnOutput(this, 'ServerPublicKeyParam', {
             value: `/wireguard/${props.regionAlias}/server/public-key`,
-            description: 'SSM path for server WireGuard public key (KMS-encrypted)',
         });
 
         new cdk.CfnOutput(this, 'SubnetId', {
             value: vpc.publicSubnets[0].subnetId,
-            description: 'Subnet to use when launching the WireGuard instance',
         });
 
         new cdk.CfnOutput(this, 'SecurityGroupId', {
