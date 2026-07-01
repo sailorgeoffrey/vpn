@@ -156,7 +156,7 @@ export class VpnStack extends cdk.Stack {
             ],
         }));
         keypairLambda.addToRolePolicy(new iam.PolicyStatement({
-            actions: ['kms:GenerateDataKey', 'kms:Decrypt', 'kms:CreateGrant'],
+            actions: ['kms:GenerateDataKey', 'kms:Decrypt', 'kms:Encrypt', 'kms:CreateGrant'],
             resources: [key.keyArn],
         }));
 
