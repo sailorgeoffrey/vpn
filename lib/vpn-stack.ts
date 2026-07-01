@@ -35,8 +35,16 @@ export class VpnStack extends cdk.Stack {
             removalPolicy: cdk.RemovalPolicy.RETAIN,
         });
 
-        // ── Default VPC (cheapest; no NAT gateways needed for a public instance) ─
-        const vpc = ec2.Vpc.fromLookup(this, 'DefaultVpc', {isDefault: true});
+        // ── VPC: single public subnet, no NAT gateways ───────────────────────────
+        const vpc = new ec2.Vpc(this, 'Vpc', {
+            maxAzs: 1,
+            natGateways: 0,
+            subnetConfiguration: [{
+                name: 'public',
+                subnetType: ec2.SubnetType.PUBLIC,
+                cidrMask: 28,
+            }],
+        });
 
         // ── Security group ────────────────────────────────────────────────────────
         const sg = new ec2.SecurityGroup(this, 'WireguardSg', {
