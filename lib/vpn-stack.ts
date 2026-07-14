@@ -120,7 +120,9 @@ export class VpnStack extends cdk.Stack {
             machineImage: ec2.MachineImage.fromSsmParameter(
                 '/aws/service/canonical/ubuntu/server/22.04/stable/current/arm64/hvm/ebs-gp2/ami-id',
             ),
-            securityGroup: sg,
+            // No securityGroup here — subnet + SG are passed via --network-interfaces
+            // at launch time so they land on the ENI rather than at instance level,
+            // avoiding the InvalidParameterCombination error from run-instances.
             role: instanceRole,
             userData,
             requireImdsv2: true,

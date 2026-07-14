@@ -62,8 +62,7 @@ up() {
   INSTANCE_ID=$(aws ec2 run-instances \
     --region "$AWS_REGION" \
     --launch-template "LaunchTemplateId=${LT_ID}" \
-    --subnet-id "$SUBNET_ID" \
-    --associate-public-ip-address \
+    --network-interfaces "DeviceIndex=0,SubnetId=${SUBNET_ID},AssociatePublicIpAddress=true,Groups=${SG_ID}" \
     --query 'Instances[0].InstanceId' \
     --output text)
 
