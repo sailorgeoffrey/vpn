@@ -68,7 +68,7 @@ export class VpnStack extends cdk.Stack {
             ],
         }));
         instanceRole.addToPolicy(new iam.PolicyStatement({
-            actions: ['kms:GenerateDataKey', 'kms:Decrypt'],
+            actions: ['kms:GenerateDataKey', 'kms:Decrypt', 'kms:Encrypt'],
             resources: [key.keyArn],
         }));
 
@@ -115,7 +115,7 @@ export class VpnStack extends cdk.Stack {
 
         // ── Launch Template ───────────────────────────────────────────────────────
         const launchTemplate = new ec2.LaunchTemplate(this, 'WireguardTemplate', {
-            launchTemplateName: `wireguard-vpn-${props.regionAlias}`,
+            launchTemplateName: `wireguard-vpn-${props.regionAlias}-v2`,
             instanceType: ec2.InstanceType.of(ec2.InstanceClass.T4G, ec2.InstanceSize.NANO),
             machineImage: ec2.MachineImage.fromSsmParameter(
                 '/aws/service/canonical/ubuntu/server/22.04/stable/current/arm64/hvm/ebs-gp2/ami-id',
@@ -172,7 +172,7 @@ export class VpnStack extends cdk.Stack {
         // Avoids cr.Provider which bundles its own framework Lambda as an S3 asset.
         new cdk.CfnCustomResource(this, 'ClientKeypair', {
             serviceToken: keypairLambda.functionArn,
-        }).addPropertyOverride('Version', '1');
+        }).addPropertyOverride('Version', '2');
 
         // Allow CloudFormation to invoke the Lambda
         keypairLambda.addPermission('AllowCfnInvoke', {
