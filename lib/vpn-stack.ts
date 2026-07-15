@@ -179,6 +179,81 @@ export class VpnStack extends cdk.Stack {
             principal: new iam.ServicePrincipal('cloudformation.amazonaws.com'),
         });
 
+        // ── VPN user role ─────────────────────────────────────────────────────────
+        // Any principal in the account can assume this role to run connect.sh.
+        const vpnUserRole = new iam.Role(this, 'VpnUserRole', {
+            roleName: `vpn-user-${props.regionAlias}`,
+            assumedBy: new iam.AccountPrincipal(this.account),
+            description: 'Least-privilege role for starting and connecting to the WireGuard VPN',
+        });
+
+        // Read CFN outputs to discover resource IDs (cfn_output helper in connect.sh)
+        vpnUserRole.addToPolicy(new iam.PolicyStatement({
+            actions: ['cloudformation:DescribeStacks'],
+            resources: [this.stackId],
+        }));
+
+        // Launch the WireGuard EC2 instance via the pre-configured launch template
+        vpnUserRole.addToPolicy(new iam.PolicyStatement({
+            actions: ['ec2:RunInstances'],
+            resources: [
+                `arn:${this.partition}:ec2:${this.region}:${this.account}:launch-template/*`,
+                `arn:${this.partition}:ec2:${this.region}:${this.account}:instance/*`,
+                `arn:${this.partition}:ec2:${this.region}:${this.account}:network-interface/*`,
+                `arn:${this.partition}:ec2:${this.region}:${this.account}:subnet/*`,
+                `arn:${this.partition}:ec2:${this.region}:${this.account}:security-group/*`,
+                `arn:${this.partition}:ec2:${this.region}::image/*`,
+                `arn:${this.partition}:ec2:${this.region}:${this.account}:volume/*`,
+            ],
+            conditions: {
+                'ArnLike': {
+                    'ec2:LaunchTemplate': `arn:${this.partition}:ec2:${this.region}:${this.account}:launch-template/${launchTemplate.launchTemplateId}`,
+                },
+            },
+        }));
+
+        // Wait for the instance to be running and read its public IP
+        vpnUserRole.addToPolicy(new iam.PolicyStatement({
+            actions: ['ec2:DescribeInstances'],
+            resources: ['*'],
+        }));
+
+        // Terminate the instance on `connect.sh down`
+        vpnUserRole.addToPolicy(new iam.PolicyStatement({
+            actions: ['ec2:TerminateInstances'],
+            resources: [`arn:${this.partition}:ec2:${this.region}:${this.account}:instance/*`],
+            conditions: {
+                'StringEquals': {
+                    'ec2:ResourceTag/aws:cloudformation:stack-name': this.stackName,
+                },
+            },
+        }));
+
+        // Pass the instance role to EC2 at launch time
+        vpnUserRole.addToPolicy(new iam.PolicyStatement({
+            actions: ['iam:PassRole'],
+            resources: [instanceRole.roleArn],
+            conditions: {
+                'StringEquals': {
+                    'iam:PassedToService': 'ec2.amazonaws.com',
+                },
+            },
+        }));
+
+        // Fetch client private key and server public key from SSM
+        vpnUserRole.addToPolicy(new iam.PolicyStatement({
+            actions: ['ssm:GetParameter'],
+            resources: [
+                `arn:${this.partition}:ssm:${this.region}:${this.account}:parameter/wireguard/${props.regionAlias}/*`,
+            ],
+        }));
+
+        // Decrypt SSM SecureString values using the WireGuard KMS key
+        vpnUserRole.addToPolicy(new iam.PolicyStatement({
+            actions: ['kms:Decrypt'],
+            resources: [key.keyArn],
+        }));
+
         // ── Outputs ───────────────────────────────────────────────────────────────
         this.launchTemplateId = new cdk.CfnOutput(this, 'LaunchTemplateId', {
             value: launchTemplate.launchTemplateId!,
@@ -198,6 +273,11 @@ export class VpnStack extends cdk.Stack {
 
         new cdk.CfnOutput(this, 'SecurityGroupId', {
             value: sg.securityGroupId,
+        });
+
+        new cdk.CfnOutput(this, 'VpnUserRoleArn', {
+            value: vpnUserRole.roleArn,
+            description: 'Assume this role to run connect.sh',
         });
     }
 }
